@@ -6,30 +6,30 @@ from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
 from tqdm import tqdm
 
 # =============================================================================
-# ΠΑΡΑΜΕΤΡΟΙ ΕΚΤΕΛΕΣΗΣ 
+# EXECUTION PARAMETERS 
 # =============================================================================
 
-GROUND_TRUTH_FILE = r"D:\Data Ippokrateio\Evaluation_results_full_dataset_v2\ef_rvsp_ground_truth_merged.csv"
-PREDICTIONS_FILE  = r"D:\Data Ippokrateio\Evaluation_results_full_dataset\predictions_merged.csv"
-OUTPUT_RESULTS    = r"D:\Data Ippokrateio\Evaluation_results_full_dataset_v2\echoprime_combined_regression_results_v4.xlsx"
+GROUND_TRUTH_FILE = r"path/to/ef_rvsp_ground_truth_merged.csv"
+PREDICTIONS_FILE  = r"path/to/predictions_merged.csv"
+OUTPUT_RESULTS    = r"path/to/output_directory/echoprime_combined_regression_results.xlsx"
 
-# Αρχείο εξαιρέσεων (exclusion list)
-# Υποστηρίζει .txt (ένα ID ανά γραμμή) ή .csv (στήλη με ID)
-# Βάλε None αν δεν θέλεις εξαιρέσεις
-EXCLUSION_FILE    = r"D:\Data Ippokrateio\Evaluation_results_full_dataset\merged_ids_all_unique_updated.txt"
-EXCLUSION_ID_COL  = None # Για .csv: όνομα στήλης με IDs. Για .txt: αγνοείται.
+# Exclusion list file
+# Supports .txt (one ID per line) or .csv (column with IDs)
+# Set to None if no exclusions are needed
+EXCLUSION_FILE    = r"path/to/merged_ids_exclusion_list.txt"
+EXCLUSION_ID_COL  = None # For .csv: name of the column with IDs. Ignored for .txt.
 
-# Ονόματα στηλών για το ID του ασθενή (για να τα ταιριάξουμε)
+# Column names for patient IDs (used for merging)
 ID_COL_GT   = "exam_id"
 ID_COL_PRED = "study_id"
 
-# Ονόματα στηλών - Ground Truth
+# Column names - Ground Truth
 GT_EF_COL       = "ef_exact"
-GT_EF_RANGE_COL = "ef_range"      # π.χ. "50-55", "45 - 50"
-GT_EF_MOD_COL   = "ef_modifier"   # π.χ. ">55", "≥50", "<30"
+GT_EF_RANGE_COL = "ef_range"      # e.g., "50-55", "45 - 50"
+GT_EF_MOD_COL   = "ef_modifier"   # e.g., ">55", ">=50", "<30"
 GT_RVSP_COL     = "rvsp_exact"
 
-# Ονόματα στηλών - Predictions (Βεβαιώσου ότι το CSV των προβλέψεων έχει αυτά τα ονόματα)
+# Column names - Predictions 
 PRED_EF_COL   = "ejection_fraction"
 PRED_RVSP_COL = "pulmonary_artery_pressure_continuous"  
 
@@ -37,16 +37,17 @@ N_BOOTSTRAPS = 10000
 RANDOM_SEED  = 42
 
 # =============================================================================
-# ΣΥΝΑΡΤΗΣΕΙΣ ΥΠΟΛΟΓΙΣΜΟΥ
+# COMPUTATION FUNCTIONS
 # =============================================================================
 
 def load_exclusion_list(filepath, id_col=None):
-    """Φορτώνει λίστα εξαιρέσεων από .txt ή .csv αρχείο.
+    """
+    Loads an exclusion list from a .txt or .csv file.
     
-    - .txt: ένα ID ανά γραμμή (αγνοεί κενές γραμμές και γραμμές με #)
-    - .csv: διαβάζει τη στήλη id_col (ή την πρώτη στήλη αν id_col=None)
+    - .txt: one ID per line (ignores empty lines and lines starting with #)
+    - .csv: reads the id_col column (or the first column if id_col=None)
     
-    Επιστρέφει set με τα IDs προς εξαίρεση.
+    Returns a set containing the IDs to be excluded.
     """
     if filepath is None or not os.path.exists(filepath):
         return set()
@@ -58,7 +59,7 @@ def load_exclusion_list(filepath, id_col=None):
         col = id_col if id_col and id_col in df_excl.columns else df_excl.columns[0]
         ids = df_excl[col].dropna().astype(str).str.strip().tolist()
     else:
-        # .txt ή οτιδήποτε άλλο — ένα ID ανά γραμμή
+        # .txt or any other format — one ID per line
         with open(filepath, 'r', encoding='utf-8') as f:
             ids = [line.strip() for line in f 
                    if line.strip() and not line.strip().startswith('#')]
@@ -67,7 +68,7 @@ def load_exclusion_list(filepath, id_col=None):
 
 
 def try_parse_float(value):
-    """Μετατρέπει σε αριθμό, αγνοώντας κείμενα ή κενά."""
+    """Converts to float, ignoring non-numeric text or NaNs."""
     if value is None or pd.isna(value):
         return None
     try:
@@ -77,11 +78,11 @@ def try_parse_float(value):
 
 
 def parse_ef_range(value):
-    """Αναγνωρίζει range (π.χ. '50-55', '45 - 50') και επιστρέφει τον μέσο όρο."""
+    """Parses a range string (e.g., '50-55', '45 - 50') and returns the average."""
     if value is None or pd.isna(value):
         return None
     s = str(value).strip()
-    # Μοτίβο: αριθμός - αριθμός (με ή χωρίς κενά/%)
+    # Pattern: number - number (with or without spaces/%)
     m = re.match(r'(\d+(?:\.\d+)?)\s*[-–]\s*(\d+(?:\.\d+)?)', s)
     if m:
         lo, hi = float(m.group(1)), float(m.group(2))
@@ -89,38 +90,40 @@ def parse_ef_range(value):
     return None
 
 def parse_ef_modifier(value):
-    """Αναγνωρίζει modifier (π.χ. '>55', '≥50', '<30') και επιστρέφει το κάτω άκρο.
+    """
+    Parses a modifier string (e.g., '>55', '>=50', '<30') and returns the boundary.
     
-    Λογική:
-      >X  / ≥X  → κάτω άκρο = X
-      <X  / ≤X  → κάτω άκρο = X (δεν εφαρμόζεται εδώ, 
-                   αλλά αν υπάρχει, χρησιμοποιούμε τον αριθμό)
+    Logic:
+      >X  / >=X  -> lower bound = X
+      <X  / <=X  -> upper bound = X (not actively applied as upper, 
+                    but extracts the numeric value if present)
     """
     if value is None or pd.isna(value):
         return None
     s = str(value).strip()
-    # Μοτίβο: (>|≥|>=|<|≤|<=) αριθμός
+    # Pattern: (>|>=|>=|<|<=|<=) number
     m = re.match(r'[^\d]*(\d+(?:\.\d+)?)', s)
     if m:
         return float(m.group(1))
     return None
 
 def resolve_ef_value(row, exact_col, range_col, mod_col):
-    """Επιλύει την τιμή EF με προτεραιότητα: exact > range (μ.ο.) > modifier (κάτω άκρο).
-    
-    Επιστρέφει (float_value, source_label) ή (None, 'not_found').
     """
-    # 1. Ακριβής τιμή
+    Resolves the EF value with priority: exact > range (average) > modifier (boundary).
+    
+    Returns (float_value, source_label) or (None, 'not_found').
+    """
+    # 1. Exact value
     v = try_parse_float(row.get(exact_col))
     if v is not None:
         return v, 'exact'
     
-    # 2. Range → μέσος όρος
+    # 2. Range -> calculate average
     v = parse_ef_range(row.get(range_col))
     if v is not None:
         return v, 'range'
     
-    # 3. Modifier → κάτω άκρο
+    # 3. Modifier -> extract boundary
     v = parse_ef_modifier(row.get(mod_col))
     if v is not None:
         return v, 'modifier'
@@ -129,7 +132,7 @@ def resolve_ef_value(row, exact_col, range_col, mod_col):
 
 
 def bootstrap_metrics(y_true, y_pred, n_bootstraps, seed):
-    """Υπολογισμός 95% Διαστημάτων Εμπιστοσύνης (Confidence Intervals)."""
+    """Calculates 95% Confidence Intervals using bootstrapping."""
     rng = np.random.RandomState(seed)
     mae_list, rmse_list, r2_list = [], [], []
 
@@ -146,12 +149,12 @@ def bootstrap_metrics(y_true, y_pred, n_bootstraps, seed):
     return ci(mae_list), ci(rmse_list), ci(r2_list)
 
 def evaluate_metric(df, gt_col, pred_col, metric_name):
-    """Αξιολογεί μια συγκεκριμένη μέτρηση (π.χ. μόνο το EF ή μόνο το RVSP)."""
-    # Κρατάμε μόνο τις γραμμές όπου έχουμε έγκυρο αριθμό ΚΑΙ στο GT ΚΑΙ στο Pred
+    """Evaluates a specific regression metric (e.g., only EF or only RVSP)."""
+    # Keep only rows with valid numeric values in BOTH ground truth and predictions
     df_valid = df[df[gt_col].notna() & df[pred_col].notna()].copy()
     
     if len(df_valid) < 2:
-        return None, df_valid, "Ανεπαρκή δεδομένα για αυτή τη μέτρηση."
+        return None, df_valid, "Insufficient data to compute this metric."
 
     y_true = df_valid[gt_col].values
     y_pred = df_valid[pred_col].values
@@ -174,38 +177,38 @@ def evaluate_metric(df, gt_col, pred_col, metric_name):
     return results, df_valid, None
 
 # =============================================================================
-# ΚΥΡΙΩΣ ΠΡΟΓΡΑΜΜΑ (MAIN)
+# MAIN PIPELINE
 # =============================================================================
 
 def run_evaluation():
     print("=" * 70)
-    print(" EchoPrime — Combined Evaluator (EF & RVSP)")
+    print(" EchoPrime — Combined Regression Evaluator (EF & RVSP)")
     print("=" * 70)
 
-    # 1. Φόρτωση αρχείων
+    # 1. Load files
     try:
         df_gt = pd.read_csv(GROUND_TRUTH_FILE)
         df_pred = pd.read_csv(PREDICTIONS_FILE)
     except FileNotFoundError as e:
-        print(f"\n[ΣΦΑΛΜΑ] Το αρχείο δεν βρέθηκε: {e.filename}")
+        print(f"\n[ERROR] File not found: {e.filename}")
         return
 
-    # Βεβαιωνόμαστε ότι οι στήλες υπάρχουν
+    # Verify required columns exist
     for col, df, name in [(ID_COL_GT, df_gt, "GT"), (ID_COL_PRED, df_pred, "Pred")]:
         if col not in df.columns:
-            print(f"[ΣΦΑΛΜΑ] Η στήλη '{col}' δεν υπάρχει στο αρχείο {name}.")
+            print(f"[ERROR] Column '{col}' not found in {name} file.")
             return
 
-    print(f"\nΔιαβάστηκαν:")
-    print(f"  Ground truth : {len(df_gt)} εξετάσεις")
-    print(f"  Predictions  : {len(df_pred)} εξετάσεις")
+    print(f"\nLoaded:")
+    print(f"  Ground truth: {len(df_gt)} examinations")
+    print(f"  Predictions : {len(df_pred)} examinations")
 
-    # --- Φόρτωση Exclusion List ---
+    # --- Load Exclusion List ---
     exclusion_ids = load_exclusion_list(EXCLUSION_FILE, EXCLUSION_ID_COL)
     if exclusion_ids:
-        print(f"  Exclusion list: {len(exclusion_ids)} IDs προς εξαίρεση")
+        print(f"  Exclusion list: {len(exclusion_ids)} IDs to exclude")
         
-        # Εξαίρεση από τα δύο dataframes πριν το merge
+        # Exclude from both dataframes prior to merging
         before_gt = len(df_gt)
         before_pred = len(df_pred)
         df_gt = df_gt[~df_gt[ID_COL_GT].astype(str).str.strip().isin(exclusion_ids)]
@@ -213,30 +216,30 @@ def run_evaluation():
         
         excluded_gt = before_gt - len(df_gt)
         excluded_pred = before_pred - len(df_pred)
-        print(f"  Εξαιρέθηκαν  : {excluded_gt} από GT, {excluded_pred} από Predictions")
+        print(f"  Excluded      : {excluded_gt} from GT, {excluded_pred} from Predictions")
     else:
         if EXCLUSION_FILE is not None:
-            print(f"  Exclusion list: (κενό ή δεν βρέθηκε το αρχείο)")
+            print(f"  Exclusion list: (empty or file not found)")
 
-    # 2. Προετοιμασία για ένωση (Merge)
+    # 2. Preparation for merge
     df_gt = df_gt.rename(columns={ID_COL_GT: 'unified_id'})
     df_pred = df_pred.rename(columns={ID_COL_PRED: 'unified_id'})
     
-    # Outer merge για να δούμε τι ακριβώς λείπει
+    # Outer merge to identify missing matches
     df_all = pd.merge(df_gt, df_pred, on='unified_id', how='outer', indicator=True)
     
     missing_issues = []
     
     for _, row in df_all[df_all['_merge'] != 'both'].iterrows():
         sid = row['unified_id']
-        reason = "Υπάρχει μόνο στο Ground Truth" if row['_merge'] == 'left_only' else "Υπάρχει μόνο στα Predictions"
+        reason = "Present only in Ground Truth" if row['_merge'] == 'left_only' else "Present only in Predictions"
         missing_issues.append({'study_id': sid, 'Issue': reason})
 
     df = df_all[df_all['_merge'] == 'both'].copy()
-    print(f"  Κοινές (Matched) : {len(df)} εξετάσεις")
+    print(f"  Matched       : {len(df)} examinations")
 
-    # 3. Καθαρισμός και μετατροπή σε αριθμούς
-    #    EF: ενοποίηση exact / range / modifier
+    # 3. Data cleaning and numeric conversion
+    #    EF: consolidate exact / range / modifier
     ef_cols_present = all(c in df.columns for c in [GT_EF_COL, GT_EF_RANGE_COL, GT_EF_MOD_COL])
     if ef_cols_present:
         resolved = df.apply(
@@ -246,9 +249,9 @@ def run_evaluation():
         df['gt_ef'] = resolved[0]
         df['ef_source'] = resolved[1]
         
-        # Αναφορά πηγής
+        # Source reporting
         src_counts = df['ef_source'].value_counts()
-        print(f"\n  Πηγές GT EF τιμών:")
+        print(f"\n  GT EF value sources:")
         for src in ['exact', 'range', 'modifier', 'not_found']:
             cnt = src_counts.get(src, 0)
             print(f"    {src:12s}: {cnt}")
@@ -264,36 +267,36 @@ def run_evaluation():
     df['gt_rvsp'] = df[GT_RVSP_COL].apply(try_parse_float) if GT_RVSP_COL in df.columns else None
     df['pred_rvsp'] = df[PRED_RVSP_COL].apply(try_parse_float) if PRED_RVSP_COL in df.columns else None
 
-    # 4. Αξιολόγηση EF
-    print(f"\n[{' EF (Κλάσμα Εξώθησης) ':^66}]")
+    # 4. Evaluate EF
+    print(f"\n[{' EF (Ejection Fraction) ':^66}]")
     print("-" * 70)
     res_ef, df_ef, err_ef = evaluate_metric(df, 'gt_ef', 'pred_ef', 'Ejection Fraction (%)')
     if res_ef:
-        print(f" Αξιολογήθηκαν    : {res_ef['N']} εξετάσεις")
-        print(f" MAE (Απόλυτο Σφάλμα) : {res_ef['MAE']:.3f}  (95% CI: {res_ef['MAE_CI'][0]:.3f} – {res_ef['MAE_CI'][1]:.3f})")
-        print(f" RMSE             : {res_ef['RMSE']:.3f}  (95% CI: {res_ef['RMSE_CI'][0]:.3f} – {res_ef['RMSE_CI'][1]:.3f})")
-        print(f" R² (Ακρίβεια)    : {res_ef['R2']:.3f}  (95% CI: {res_ef['R2_CI'][0]:.3f} – {res_ef['R2_CI'][1]:.3f})")
+        print(f" Evaluated                : {res_ef['N']} examinations")
+        print(f" MAE (Mean Absolute Error): {res_ef['MAE']:.3f}  (95% CI: {res_ef['MAE_CI'][0]:.3f} - {res_ef['MAE_CI'][1]:.3f})")
+        print(f" RMSE                     : {res_ef['RMSE']:.3f}  (95% CI: {res_ef['RMSE_CI'][0]:.3f} - {res_ef['RMSE_CI'][1]:.3f})")
+        print(f" R² (Accuracy)            : {res_ef['R2']:.3f}  (95% CI: {res_ef['R2_CI'][0]:.3f} - {res_ef['R2_CI'][1]:.3f})")
     else:
         print(f" ⚠ {err_ef}")
 
-    # 5. Αξιολόγηση RVSP
-    print(f"\n[{' RVSP (Πίεση Δεξιάς Κοιλίας) ':^66}]")
+    # 5. Evaluate RVSP
+    print(f"\n[{' RVSP (Right Ventricular Systolic Pressure) ':^66}]")
     print("-" * 70)
     res_rvsp, df_rvsp, err_rvsp = evaluate_metric(df, 'gt_rvsp', 'pred_rvsp', 'RVSP (mmHg)')
     if res_rvsp:
-        print(f" Αξιολογήθηκαν    : {res_rvsp['N']} εξετάσεις")
-        print(f" MAE (Απόλυτο Σφάλμα) : {res_rvsp['MAE']:.3f}  (95% CI: {res_rvsp['MAE_CI'][0]:.3f} – {res_rvsp['MAE_CI'][1]:.3f})")
-        print(f" RMSE             : {res_rvsp['RMSE']:.3f}  (95% CI: {res_rvsp['RMSE_CI'][0]:.3f} – {res_rvsp['RMSE_CI'][1]:.3f})")
-        print(f" R² (Ακρίβεια)    : {res_rvsp['R2']:.3f}  (95% CI: {res_rvsp['R2_CI'][0]:.3f} – {res_rvsp['R2_CI'][1]:.3f})")
+        print(f" Evaluated                : {res_rvsp['N']} examinations")
+        print(f" MAE (Mean Absolute Error): {res_rvsp['MAE']:.3f}  (95% CI: {res_rvsp['MAE_CI'][0]:.3f} - {res_rvsp['MAE_CI'][1]:.3f})")
+        print(f" RMSE                     : {res_rvsp['RMSE']:.3f}  (95% CI: {res_rvsp['RMSE_CI'][0]:.3f} - {res_rvsp['RMSE_CI'][1]:.3f})")
+        print(f" R² (Accuracy)            : {res_rvsp['R2']:.3f}  (95% CI: {res_rvsp['R2_CI'][0]:.3f} - {res_rvsp['R2_CI'][1]:.3f})")
     else:
         print(f" ⚠ {err_rvsp}")
 
-    # 6. Εξαγωγή σε Excel
+    # 6. Export to Excel
     print("\n" + "=" * 70)
-    print(" ΑΠΟΘΗΚΕΥΣΗ ΑΠΟΤΕΛΕΣΜΑΤΩΝ")
+    print(" SAVING RESULTS")
     print("=" * 70)
 
-    # Φύλλο 1: Σύνοψη
+    # Sheet 1: Summary
     summary_rows = []
     for res in [res_ef, res_rvsp]:
         if res:
@@ -306,7 +309,7 @@ def run_evaluation():
                 {"Metric": res['Metric_Name'], "Statistic": "Pred Mean ± Std", "Value": f"{res['Pred_Mean']:.2f} ± {res['Pred_Std']:.2f}", "95% CI": ""},
             ])
     
-    # Πηγές EF τιμών (διαφάνεια)
+    # EF value sources (for transparency)
     if ef_cols_present and 'ef_source' in df.columns:
         src_counts = df['ef_source'].value_counts()
         for src in ['exact', 'range', 'modifier']:
@@ -316,7 +319,7 @@ def run_evaluation():
     
     df_summary = pd.DataFrame(summary_rows)
 
-    # Φύλλα 2 & 3: Λεπτομέρειες ανά ασθενή
+    # Sheets 2 & 3: Patient-level details
     if res_ef:
         df_ef = df_ef[['unified_id', 'gt_ef', 'pred_ef', 'ef_source']].copy()
         df_ef.columns = ['Study_ID', 'GT_EF', 'Pred_EF', 'EF_Source']
@@ -327,10 +330,10 @@ def run_evaluation():
         df_rvsp.columns = ['Study_ID', 'GT_RVSP', 'Pred_RVSP']
         df_rvsp['Abs_Error'] = (df_rvsp['GT_RVSP'] - df_rvsp['Pred_RVSP']).abs().round(2)
 
-    # Φύλλο 4: Προβλήματα/Εξαιρέσεις
+    # Sheet 4: Issues/Exclusions
     df_missing = pd.DataFrame(missing_issues)
 
-    # Εγγραφή στο Excel
+    # Write to Excel
     os.makedirs(os.path.dirname(OUTPUT_RESULTS), exist_ok=True)
     with pd.ExcelWriter(OUTPUT_RESULTS, engine='openpyxl') as writer:
         df_summary.to_excel(writer, sheet_name='Summary Metrics', index=False)
@@ -344,7 +347,7 @@ def run_evaluation():
             df_excluded = pd.DataFrame({'Excluded_Study_ID': sorted(exclusion_ids)})
             df_excluded.to_excel(writer, sheet_name='Excluded_IDs', index=False)
 
-    print(f" ✓ Το Excel αποθηκεύτηκε επιτυχώς στο:\n   {OUTPUT_RESULTS}\n")
+    print(f" ✓ Excel successfully saved to:\n   {OUTPUT_RESULTS}\n")
 
 
 if __name__ == '__main__':
