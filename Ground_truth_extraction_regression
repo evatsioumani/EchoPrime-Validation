@@ -14,20 +14,20 @@ try:
     BS4_AVAILABLE = True
 except ImportError:
     BS4_AVAILABLE = False
-    print("[ΣΦΑΛΜΑ] Απαιτείται: pip install beautifulsoup4 lxml")
+    print("[ERROR] Required packages missing. Please run: pip install beautifulsoup4 lxml")
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s | %(levelname)s | %(message)s')
 logger = logging.getLogger(__name__)
 
 # =============================================================================
-# ΠΑΡΑΜΕΤΡΟΙ ΕΚΤΕΛΕΣΗΣ (Άλλαξέ τα πριν πατήσεις F5)
+# EXECUTION PARAMETERS (Change these to match your local environment)
 # =============================================================================
 
-SEVEN_ZIP = r"C:\Users\evaggelia\7-Zip\7z.exe"          
-DATASET_DIR = r"D:\ORGANIZED_DATA"             
-OUTPUT_CSV = r"D:\Data Ippokrateio\Evaluation_results_full_dataset_v2\ef_rvsp_ground_truth.csv"               
-EXCLUSION_LIST = r"D:\Data Ippokrateio\Ippokrateio documents\Study_pair_audit\exclude_all_ids_v2.txt"
-OUTPUT_EXCEL_STATS = r"D:\Data Ippokrateio\Evaluation_results_full_dataset_v2\extraction_statistics_ef_report.xlsx" # <--- Νέο αρχείο στατιστικών
+SEVEN_ZIP = r"C:\Program Files\7-Zip\7z.exe"          
+DATASET_DIR = r"path/to/your/organized_data"              
+OUTPUT_CSV = r"path/to/output/ef_rvsp_ground_truth.csv"                
+EXCLUSION_LIST = r"path/to/your/exclude_all_ids.txt"
+OUTPUT_EXCEL_STATS = r"path/to/output/extraction_statistics_ef_report.xlsx" 
 MAX_FILES = None                                 
 REPORT_FILENAME = "temp_report.htm"
 
@@ -36,13 +36,13 @@ REPORT_FILENAME = "temp_report.htm"
 # EXCLUSION LIST & DATASET TRAVERSAL
 # =============================================================================
 
-def load_exclusion_list(exclusion_list_path) -> set:
+def load_exclusion_list(exclusion_list_path: str) -> set:
     if not exclusion_list_path:
         return set()
 
     path = Path(exclusion_list_path)
     if not path.exists():
-        logger.warning(f"  ⚠ Η exclusion list δεν βρέθηκε στο: {path} — Συνεχίζω χωρίς εξαιρέσεις.")
+        logger.warning(f"  ⚠ Exclusion list not found at: {path} — Continuing without exclusions.")
         return set()
 
     ids = set()
@@ -52,7 +52,7 @@ def load_exclusion_list(exclusion_list_path) -> set:
             if line and not line.startswith("#"):
                 ids.add(line)
                 
-    logger.info(f"Φορτώθηκε Exclusion List: {len(ids)} εξετάσεις θα παραλειφθούν.")
+    logger.info(f"Loaded Exclusion List: {len(ids)} exams will be skipped.")
     return ids
 
 
@@ -61,7 +61,7 @@ def find_all_chm_files(root_folder: str, exclusion_ids: set) -> list:
     skipped_excluded = 0
     
     if not os.path.exists(root_folder):
-        logger.error(f"Το directory {root_folder} δεν υπάρχει. Έλεγξε το DATASET_DIR.")
+        logger.error(f"Directory {root_folder} does not exist. Please check DATASET_DIR.")
         return chm_files
         
     for exam_id in sorted(os.listdir(root_folder)):
@@ -82,7 +82,7 @@ def find_all_chm_files(root_folder: str, exclusion_ids: set) -> list:
             continue
 
         if len(all_chm) > 1:
-            logger.warning(f"  ⚠ {exam_id}: {len(all_chm)} CHM αρχεία → χρησιμοποιείται '{all_chm[0]}'")
+            logger.warning(f"  ⚠ {exam_id}: Found {len(all_chm)} CHM files → using '{all_chm[0]}'")
 
         chm_files.append({
             "exam_id":  exam_id,
@@ -90,7 +90,7 @@ def find_all_chm_files(root_folder: str, exclusion_ids: set) -> list:
         })
         
     if skipped_excluded > 0:
-        logger.info(f"Συνολικά {skipped_excluded} εξετάσεις παραλείφθηκαν λόγω της Exclusion List.")
+        logger.info(f"A total of {skipped_excluded} exams were skipped due to the Exclusion List.")
         
     return chm_files
 
@@ -111,7 +111,7 @@ def extract_report_html(chm_path: str) -> Optional[str]:
     except subprocess.CalledProcessError:
         return None
     except FileNotFoundError:
-        logger.error(f"7-Zip δεν βρέθηκε: {SEVEN_ZIP}")
+        logger.error(f"7-Zip executable not found at: {SEVEN_ZIP}")
         return None
     finally:
         shutil.rmtree(output_dir, ignore_errors=True)
@@ -121,6 +121,7 @@ def extract_report_html(chm_path: str) -> Optional[str]:
 # HTML PARSING
 # =============================================================================
 
+# Greek and English keywords to locate specific sections within the medical reports
 SECTION_KEYS = {
     'LV':          ['αριστερή κοιλία', 'αριστερη κοιλια'],
     'TV':          ['τριγλώχινα', 'τριγλωχινα', 'tricuspid'],
@@ -188,6 +189,7 @@ def get_sec(sections: dict, key: str) -> str:
 # EXTRACTORS (EF & RVSP)
 # =============================================================================
 
+# Regex patterns configured to capture Greek medical terminology variations
 EF_PATTERN = re.compile(
     r'(?:'
     r'[eEεΕ]?[fFφΦ]|'
@@ -202,7 +204,6 @@ EF_PATTERN = re.compile(
     re.IGNORECASE
 )
 
-# Το νέο, "αλεξίσφαιρο" Regex για την πίεση
 RVSP_PATTERN = re.compile(
     r'(?:'
     r'rvsp|r\.?v\.?s\.?p\.?|'
@@ -224,10 +225,11 @@ RVSP_PATTERN = re.compile(
 
 def _extract_numeric(pattern: re.Pattern, text: str) -> dict:
     """
-    Επιστρέφει dict με:
-      - exact_value:    float ή None (ακριβής τιμή, μόνο αν δεν είναι range/modifier)
-      - modifier_value: str ή None  (π.χ. ">55", "<60", "~50")
-      - range_value:    str ή None  (π.χ. "55-60")
+    Extracts numeric values using the provided regex pattern.
+    Returns a dictionary with:
+      - exact_value:    float or None (exact value, only if not range/modifier)
+      - modifier_value: str or None   (e.g., ">55", "<60", "~50")
+      - range_value:    str or None   (e.g., "55-60")
       - status:         'exact' | 'modifier' | 'range' | 'not_found'
     """
     result = {'exact_value': None, 'modifier_value': None, 'range_value': None, 'status': 'not_found'}
@@ -271,10 +273,10 @@ def extract_labels_from_html(html: str) -> dict:
     ef   = extract_exact_ef(sections)
     rvsp = extract_exact_rvsp(sections)
     return {
-        'ef_exact':    ef['exact_value'],
-        'ef_modifier': ef['modifier_value'],
-        'ef_range':    ef['range_value'],
-        'ef_status':   ef['status'],
+        'ef_exact':      ef['exact_value'],
+        'ef_modifier':   ef['modifier_value'],
+        'ef_range':      ef['range_value'],
+        'ef_status':     ef['status'],
         'rvsp_exact':    rvsp['exact_value'],
         'rvsp_modifier': rvsp['modifier_value'],
         'rvsp_range':    rvsp['range_value'],
@@ -297,7 +299,7 @@ def run_batch():
         chm_entries = chm_entries[:MAX_FILES]
 
     total = len(chm_entries)
-    logger.info(f"Ξεκινά το processing για τις υπόλοιπες {total} εξετάσεις...")
+    logger.info(f"Starting processing for the remaining {total} exams...")
 
     results, skipped, failed = [], [], []
     
@@ -312,30 +314,30 @@ def run_batch():
         chm_path = entry["chm_path"]
 
         if i % 50 == 0 and i > 0:
-            logger.info(f"  Επεξεργασία... [{i}/{total}]")
+            logger.info(f"  Processing... [{i}/{total}]")
 
         html = extract_report_html(chm_path)
         if not html:
-            logger.warning(f"  ✗ {exam_id}: αποτυχία extraction")
+            logger.warning(f"  ✗ {exam_id}: extraction failed")
             failed.append({'exam_id': exam_id, 'chm_path': chm_path})
             continue
 
         labels = extract_labels_from_html(html)
 
-        # Καταγραφή στατιστικών για EF
+        # Record statistics for EF
         if labels['ef_status'] == 'exact':
             found_counts['ef'] += 1
         else:
             skip_counts['ef'][labels['ef_status']] += 1
             
-        # Καταγραφή στατιστικών για RVSP
+        # Record statistics for RVSP
         if labels['rvsp_status'] == 'exact':
             found_counts['rvsp'] += 1
         else:
             skip_counts['rvsp'][labels['rvsp_status']] += 1
 
-        # Αποθήκευση στο κύριο CSV — ΟΛΕΣ οι τιμές καταγράφονται
-        # Αν δεν υπάρχει τιμή (not_found), ο exam_id μπαίνει αλλά οι στήλες μένουν κενές
+        # Save to main CSV — ALL values are recorded
+        # If there's no value (not_found), exam_id is inserted but columns remain empty
         results.append({
             'exam_id':       exam_id,
             'ef_exact':      labels['ef_exact'],
@@ -346,7 +348,7 @@ def run_batch():
             'rvsp_range':    labels['rvsp_range'],
         })
 
-        # Αν λείπει ΑΚΡΙΒΗΣ τιμή σε ΕΣΤΩ ΚΑΙ ΕΝΑ, καταγραφή λόγου
+        # If an EXACT value is missing in AT LEAST ONE, record the reason
         if labels['ef_status'] != 'exact' or labels['rvsp_status'] != 'exact':
             skipped.append({
                 'exam_id':          exam_id,
@@ -354,7 +356,7 @@ def run_batch():
                 'rvsp_status':      labels['rvsp_status'],
             })
 
-    # --- Αποθήκευση αποτελεσμάτων (Main CSV) ---
+    # --- Save results (Main CSV) ---
     fieldnames = ['exam_id', 'ef_exact', 'ef_modifier', 'ef_range',
                   'rvsp_exact', 'rvsp_modifier', 'rvsp_range']
     with open(OUTPUT_CSV, 'w', newline='', encoding='utf-8') as f:
@@ -362,38 +364,38 @@ def run_batch():
         writer.writeheader()
         writer.writerows(results)
 
-    # --- Αποθήκευση παραλειφθέντων (Skipped CSV) ---
+    # --- Save skipped entries (Skipped CSV) ---
     skipped_csv = OUTPUT_CSV.replace('.csv', '_skipped.csv')
     with open(skipped_csv, 'w', newline='', encoding='utf-8') as f:
         writer = csv.DictWriter(f, fieldnames=['exam_id', 'ef_status', 'rvsp_status'])
         writer.writeheader()
         writer.writerows(skipped)
 
-    # --- Στατιστικά για Terminal ---
+    # --- Terminal Statistics ---
     total_processed = total - len(failed)
 
     logger.info(f"\n{'='*60}")
-    logger.info(f"ΣΥΝΟΛΙΚΗ ΑΝΑΦΟΡΑ")
+    logger.info(f"FINAL REPORT")
     logger.info(f"{'='*60}")
-    logger.info(f"  Εξετάσεις προς επεξεργασία : {total}")
-    logger.info(f"  Extraction αποτυχίες       : {len(failed)}")
-    logger.info(f"  Επιτυχώς επεξεργάστηκαν    : {total_processed}")
+    logger.info(f"  Exams to process      : {total}")
+    logger.info(f"  Extraction failures   : {len(failed)}")
+    logger.info(f"  Successfully processed: {total_processed}")
 
     ef_found = found_counts['ef']
     ef_skipped = total_processed - ef_found
     ef_pct = (ef_found / total_processed * 100) if total_processed > 0 else 0
 
-    logger.info(f"\n--- Ανάλυση EF (Κλάσμα Εξώθησης) ---")
-    logger.info(f"  ✓ Κρατήθηκαν (ακριβής) : {ef_found}  ({ef_pct:.1f}%)")
-    logger.info(f"  ✗ Παραλείφθηκαν        : {ef_skipped}  ({100-ef_pct:.1f}%)")
+    logger.info(f"\n--- EF Analysis (Ejection Fraction) ---")
+    logger.info(f"  ✓ Retained (exact) : {ef_found}  ({ef_pct:.1f}%)")
+    logger.info(f"  ✗ Skipped          : {ef_skipped}  ({100-ef_pct:.1f}%)")
 
     rvsp_found = found_counts['rvsp']
     rvsp_skipped = total_processed - rvsp_found
     rvsp_pct = (rvsp_found / total_processed * 100) if total_processed > 0 else 0
 
-    logger.info(f"\n--- Ανάλυση RVSP (Πίεση Δεξιάς Κοιλίας) ---")
-    logger.info(f"  ✓ Κρατήθηκαν (ακριβής) : {rvsp_found}  ({rvsp_pct:.1f}%)")
-    logger.info(f"  ✗ Παραλείφθηκαν        : {rvsp_skipped}  ({100-rvsp_pct:.1f}%)")
+    logger.info(f"\n--- RVSP Analysis (Right Ventricular Systolic Pressure) ---")
+    logger.info(f"  ✓ Retained (exact) : {rvsp_found}  ({rvsp_pct:.1f}%)")
+    logger.info(f"  ✗ Skipped          : {rvsp_skipped}  ({100-rvsp_pct:.1f}%)")
 
     logger.info(f"\n{'='*60}")
     logger.info(f"Output CSV     : {OUTPUT_CSV}")
@@ -407,43 +409,43 @@ def run_batch():
             writer.writerows(failed)
         logger.info(f"Failed CSV     : {failed_log}")
 
-    # --- Δημιουργία Excel Στατιστικών (ΝΕΟ) ---
+    # --- Create Statistics Excel ---
     df_general = pd.DataFrame([{
-        "Συνολικές Εξετάσεις (Μετά την Exclusion List)": total,
-        "Αποτυχίες Ανάγνωσης (Failed)": len(failed),
-        "Επιτυχώς Επεξεργάστηκαν": total_processed
+        "Total Exams (Post-Exclusion)": total,
+        "Read Failures (Failed)": len(failed),
+        "Successfully Processed": total_processed
     }])
 
     df_metrics = pd.DataFrame([
         {
-            "Μεταβλητή": "EF (Κλάσμα Εξώθησης)",
-            "Βρέθηκε Ακριβής Τιμή": ef_found,
-            "Ποσοστό Εύρεσης (%)": round(ef_pct, 1),
-            "Παραλείφθηκε (Skipped)": ef_skipped,
-            "Ποσοστό Παράλειψης (%)": round(100 - ef_pct, 1),
-            "Αιτία: Δεν βρέθηκε πουθενά": skip_counts['ef']['not_found'],
-            "Αιτία: Ήταν εύρος (π.χ. 55-60)": skip_counts['ef']['range'],
-            "Αιτία: Είχε σύμβολα (π.χ. >55)": skip_counts['ef']['modifier'],
+            "Variable": "EF (Ejection Fraction)",
+            "Exact Value Found": ef_found,
+            "Found Rate (%)": round(ef_pct, 1),
+            "Skipped": ef_skipped,
+            "Skip Rate (%)": round(100 - ef_pct, 1),
+            "Cause: Not Found": skip_counts['ef']['not_found'],
+            "Cause: Range (e.g., 55-60)": skip_counts['ef']['range'],
+            "Cause: Modifier (e.g., >55)": skip_counts['ef']['modifier'],
         },
         {
-            "Μεταβλητή": "RVSP / sPAP",
-            "Βρέθηκε Ακριβής Τιμή": rvsp_found,
-            "Ποσοστό Εύρεσης (%)": round(rvsp_pct, 1),
-            "Παραλείφθηκε (Skipped)": rvsp_skipped,
-            "Ποσοστό Παράλειψης (%)": round(100 - rvsp_pct, 1),
-            "Αιτία: Δεν βρέθηκε πουθενά": skip_counts['rvsp']['not_found'],
-            "Αιτία: Ήταν εύρος (π.χ. 30-35)": skip_counts['rvsp']['range'],
-            "Αιτία: Είχε σύμβολα (π.χ. <35)": skip_counts['rvsp']['modifier'],
+            "Variable": "RVSP / sPAP",
+            "Exact Value Found": rvsp_found,
+            "Found Rate (%)": round(rvsp_pct, 1),
+            "Skipped": rvsp_skipped,
+            "Skip Rate (%)": round(100 - rvsp_pct, 1),
+            "Cause: Not Found": skip_counts['rvsp']['not_found'],
+            "Cause: Range (e.g., 30-35)": skip_counts['rvsp']['range'],
+            "Cause: Modifier (e.g., <35)": skip_counts['rvsp']['modifier'],
         }
     ])
 
     try:
         with pd.ExcelWriter(OUTPUT_EXCEL_STATS, engine='openpyxl') as writer:
-            df_general.to_excel(writer, sheet_name='Γενικά_Στοιχεία', index=False)
-            df_metrics.to_excel(writer, sheet_name='Ανάλυση_Μετρήσεων', index=False)
-        logger.info(f"Excel Στατιστικών: {OUTPUT_EXCEL_STATS}")
+            df_general.to_excel(writer, sheet_name='General_Stats', index=False)
+            df_metrics.to_excel(writer, sheet_name='Metrics_Analysis', index=False)
+        logger.info(f"Statistics Excel File: {OUTPUT_EXCEL_STATS}")
     except Exception as e:
-        logger.error(f"Αποτυχία δημιουργίας Excel Στατιστικών: {e}")
+        logger.error(f"Failed to create Statistics Excel: {e}")
 
 # =============================================================================
 # ENTRY POINT
